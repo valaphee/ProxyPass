@@ -16,6 +16,7 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.util.ResourceLeakDetector;
 import lombok.AccessLevel;
 import lombok.Getter;
+import lombok.SneakyThrows;
 import lombok.extern.log4j.Log4j2;
 import net.lenni0451.commons.httpclient.HttpClient;
 import net.raphimc.minecraftauth.MinecraftAuth;
@@ -38,6 +39,7 @@ import org.cloudburstmc.proxypass.network.bedrock.session.Account;
 import org.cloudburstmc.proxypass.network.bedrock.session.ProxyClientSession;
 import org.cloudburstmc.proxypass.network.bedrock.session.ProxyServerSession;
 import org.cloudburstmc.proxypass.network.bedrock.session.UpstreamPacketHandler;
+import org.cloudburstmc.proxypass.network.bedrock.util.MinecraftServicesUtils;
 import org.cloudburstmc.proxypass.network.bedrock.util.NbtBlockDefinitionRegistry;
 import org.cloudburstmc.proxypass.network.bedrock.util.UnknownBlockDefinitionRegistry;
 
@@ -122,7 +124,6 @@ public class ProxyPass {
     private int maxClients = 0;
     private boolean onlineMode = false;
     private boolean saveAuthDetails = false;
-    private InetSocketAddress targetAddress;
     private InetSocketAddress proxyAddress;
     private Configuration configuration;
     private Path baseDir;
@@ -152,7 +153,6 @@ public class ProxyPass {
         configuration = Configuration.load(configPath);
 
         proxyAddress = configuration.getProxy().getAddress();
-        targetAddress = configuration.getDestination().getAddress();
         maxClients = configuration.getMaxClients();
         onlineMode = configuration.isOnlineMode();
         saveAuthDetails = configuration.isSaveAuthDetails();
@@ -361,21 +361,18 @@ public class ProxyPass {
         if (Files.notExists(authPath) || !Files.isRegularFile(authPath) || !saveAuthDetails) {
             StepFullBedrockSession.FullBedrockSession bedrockSession = MinecraftAuth.BEDROCK_DEVICE_CODE_LOGIN.getFromInput(client,
                     new StepMsaDeviceCode.MsaDeviceCodeCallback(msaDeviceCode -> {
-                        log.info("Go to " + msaDeviceCode.getVerificationUri());
+                        log.info("Go to " + msaDeviceCode.getVerificationUri() + "?otc=" + msaDeviceCode.getUserCode());
                         log.info("Enter code " + msaDeviceCode.getUserCode());
 
                         if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
                             try {
-                                Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-                                clipboard.setContents(new StringSelection(msaDeviceCode.getUserCode()), null);
-                                log.info("Copied code to clipboard");
-                                Desktop.getDesktop().browse(new URI(msaDeviceCode.getVerificationUri()));
+                                Desktop.getDesktop().browse(new URI(msaDeviceCode.getVerificationUri() + "?otc=" + msaDeviceCode.getUserCode()));
                             } catch (IOException | URISyntaxException e) {
                                 log.error("Failed to open browser", e);
                             }
                         }
                     }));
-            account = new Account(bedrockSession);
+            account = new Account(bedrockSession, MinecraftServicesUtils.getMcToken(MinecraftAuth.createHttpClient(), bedrockSession.getPlayFabToken()));
 
             if (saveAuthDetails) {
                 Files.write(authPath, account.toJson().toString().getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
@@ -389,5 +386,17 @@ public class ProxyPass {
         account.refresh(client);
         Files.write(authPath, account.toJson().toString().getBytes(StandardCharsets.UTF_8), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         return account;
+    }
+
+    @SneakyThrows
+    public InetSocketAddress getTargetAddress() {
+        InetSocketAddress targetAddress;
+        try {
+            targetAddress = MinecraftServicesUtils.getVenueAddress(MinecraftAuth.createHttpClient(), account.mcToken(), UUID.fromString(configuration.getDestination().getHost()));
+            Thread.sleep(1000L);
+        } catch (IllegalArgumentException ex) {
+            targetAddress = configuration.getDestination().getAddress();
+        }
+        return targetAddress;
     }
 }
